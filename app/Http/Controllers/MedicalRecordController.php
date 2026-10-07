@@ -5,82 +5,82 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\MedicalRecord;
 use App\Models\Appointment;
-use App\Models\Medicine;
 
 class MedicalRecordController extends Controller
 {
+    /**
+     * Menyimpan Rekam Medis SOAP oleh Dokter
+     * Sekaligus mengunci validasi bahwa pasien ini telah selesai diperiksa.
+     */
     public function store(Request $request)
     {
+        // 1. Validasi input form SOAP dari dokter
         $request->validate([
-            'appointment_id' => 'required|string',
-            'patient_id' => 'required|string',
-            'doctor_id' => 'required|string',
-            'soap' => 'required|array',
-            'soap.plan.prescriptions' => 'sometimes|array',
-            'soap.plan.prescriptions.*.medicine' => 'required_with:soap.plan.prescriptions|string',
-            'soap.plan.prescriptions.*.qty' => 'required_with:soap.plan.prescriptions|integer'
+            'appointment_id' => 'required|string', // Menghubungkan ke sesi antrean pasien
+            'patient_id'     => 'required|string',
+            'subjective'     => 'required|string', // Keluhan / Anamnesis dari pasien
+            'objective'      => 'required|string', // Hasil pemeriksaan fisik / tanda vital
+            'assessment'     => 'required|string', // Diagnosa / Penilaian dokter
+            'plan'           => 'required|string', // Rencana pengobatan / tindakan / resep
+            'prescriptions'  => 'nullable|array'   // Daftar obat jika ada resep (untuk modul apotek)
         ]);
 
-        // 1. Simpan Rekam Medis SOAP
-        $medicalRecord = MedicalRecord::create([
-            'appointment_id' => $request->appointment_id,
-            'patient_id' => $request->patient_id,
-            'doctor_id' => $request->doctor_id,
-            'soap' => $request->soap
-        ]);
-
-        // 2. Otomatis Potong Stok Berdasarkan Resep (Logika FEFO)
-        if (isset($request->soap['plan']['prescriptions'])) {
-            foreach ($request->soap['plan']['prescriptions'] as $item) {
-                // Cari data obat berdasarkan nama
-                $medicine = Medicine::where('name', $item['medicine'])->first();
-
-                if ($medicine && !empty($medicine->batches)) {
-                    // Urutkan batch berdasarkan exp_date terdekat (Ascending)
-                    $batches = collect($medicine->batches)->sortBy('exp_date')->values()->all();
-                    
-                    $qtyNeeded = $item['qty'];
-                    $updatedBatches = [];
-
-                    foreach ($batches as $batch) {
-                        if ($qtyNeeded > 0 && $batch['stock'] > 0) {
-                            if ($batch['stock'] >= $qtyNeeded) {
-                                // Stok batch ini cukup untuk mencukupi kebutuhan
-                                $batch['stock'] -= $qtyNeeded;
-                                $qtyNeeded = 0;
-                            } else {
-                                // Stok batch ini habis terserap, lanjut ke batch berikutnya
-                                $qtyNeeded -= $batch['stock'];
-                                $batch['stock'] = 0;
-                            }
-                        }
-                        $updatedBatches[] = $batch;
-                    }
-
-                    // Simpan kembali array batches yang sudah terpotong ke MongoDB
-                    $medicine->update(['batches' => $updatedBatches]);
-                }
-            }
+        // 2. Ambil data antrean (appointment) untuk memastikan pasien ini memang terdaftar
+        $appointment = Appointment::find($request->appointment_id);
+        if (!$appointment) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Data antrean pasien tidak ditemukan.'
+            ], 404);
         }
 
-        // 3. Ubah Status Antrean Menjadi Selesai
-        Appointment::where('_id', $request->appointment_id)->update(['status' => 'done']);
+        // 3. Pastikan dokter yang login adalah dokter yang bertugas di appointment tersebut
+        // (Menggunakan ID user yang sedang login via token Sanctum)
+        $doctorId = $request->user()->_id;
+        
+        // Simpan data rekam medis (SOAP) ke database MongoDB
+        $medicalRecord = MedicalRecord::create([
+            'appointment_id' => $request->appointment_id,
+            'patient_id'     => $request->patient_id,
+            'doctor_id'      => $doctorId,
+            'subjective'     => $request->subjective,
+            'objective'      => $request->objective,
+            'assessment'     => $request->assessment,
+            'plan'           => $request->plan,
+            'prescriptions'  => $request->prescriptions ?? [],
+            'examined_at'    => now()
+        ]);
+
+        // 4. Logika Validasi Tombol "Next Patient":
+        // Ubah status antrean pasien ini menjadi 'completed' (selesai).
+        // Dengan status ini, antrean selesai dan sistem mengizinkan dokter beralih ke pasien berikutnya.
+        $appointment->update([
+            'status' => 'completed'
+        ]);
 
         return response()->json([
-            'message' => 'Rekam Medis Tersimpan & Stok Obat Berhasil Dikurangi secara FEFO',
-            'data' => $medicalRecord
+            'status' => 'success',
+            'message' => 'Rekam medis SOAP berhasil disimpan. Sesi pasien selesai, silakan lanjut ke pasien berikutnya.',
+            'data' => [
+                'medical_record' => $medicalRecord,
+                'next_queue_status' => 'ready' // Sinyal ke frontend bahwa tombol Next Patient diizinkan
+            ]
         ], 201);
     }
 
+    /**
+     * Riwayat Rekam Medis Pasien (Bisa diakses dokter atau pasien bersangkutan)
+     */
     public function patientHistory($patientId)
     {
         $records = MedicalRecord::where('patient_id', $patientId)
-            ->with(['appointment.doctor'])
+            ->orderBy('examined_at', 'desc')
             ->get();
 
         return response()->json([
-            'message' => 'Riwayat Rekam Medis Berhasil Dimuat',
+            'status' => 'success',
+            'message' => 'Riwayat rekam medis berhasil dimuat',
             'data' => $records
-        ]);
+        ], 200);
     }
 }

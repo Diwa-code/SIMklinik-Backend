@@ -123,4 +123,6 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    'doctor_register_secret' => env('DOCTOR_REGISTER_SECRET', 'RAHASIA_KLINIK'),
+
 ];

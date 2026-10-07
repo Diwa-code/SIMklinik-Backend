@@ -16,8 +16,10 @@ class Appointment extends Model
         'doctor_id',
         'queue_number',
         'date',
+        'complaint',
+        'guarantor', // Contoh: umum, asuransi
         'status', // Contoh: waiting, in_progress, done, cancelled
-        'guarantor' // Contoh: umum, asuransi
+        'payment_status'
     ];
 
     public function patient(): BelongsTo

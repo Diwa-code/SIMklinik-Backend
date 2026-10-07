@@ -13,10 +13,13 @@ class Billing extends Model
     protected $fillable = [
         'appointment_id',
         'patient_id',
+        'doctor_fee',
         'consultation_fee', // Biaya jasa dokter
         'action_fee',       // Biaya tindakan (misal: cek darah, jahit luka)
         'medicine_fee',     // Total harga obat yang ditebus
+        'total_amount',     // Total tagihan
         'grand_total',      // Jumlah akhir yang harus dibayar
+        'guarantor',        // Penjamin: Umum, BPJS, Asuransi
         'payment_status',   // unpaid, paid, cancelled
         'payment_method'    // cash, transfer, asuransi
     ];

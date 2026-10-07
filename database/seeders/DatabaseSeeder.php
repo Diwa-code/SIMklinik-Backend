@@ -22,7 +22,15 @@ class DatabaseSeeder extends Seeder
             'role' => 'admin'
         ]);
 
-        // 2. Buat Akun Dokter & Profilnya
+        // 2. Buat Akun Apoteker (Untuk uji endpoint input obat)
+        User::create([
+            'name' => 'Siti Apoteker, S.Farm',
+            'email' => 'apoteker@simklinik.com',
+            'password' => Hash::make('password123'),
+            'role' => 'pharmacist'
+        ]);
+
+        // 3. Buat Akun Dokter & Profilnya (Disesuaikan dengan field str_number & sip_number)
         $doctorUser = User::create([
             'name' => 'dr. Andi Wijaya, Sp.PD',
             'email' => 'dokter@simklinik.com',
@@ -31,15 +39,16 @@ class DatabaseSeeder extends Seeder
         ]);
 
         $doctor = Doctor::create([
-            'user_id' => $doctorUser->id,
-            'sip' => 'SIP.12345.2026',
-            'specialization' => 'Penyakit Dalam',
-            'phone' => '08123456789'
+            'user_id' => $doctorUser->_id,
+            'str_number' => 'STR-98765432',
+            'sip_number' => 'SIP.12345.2026',
+            'specialization' => 'Poliklinik Penyakit Dalam', // Disesuaikan agar klop dengan rekomendasi keluhan
+            'is_active' => true
         ]);
 
-        // 3. Buat Jadwal Praktik untuk dr. Andi
+        // 4. Buat Jadwal Praktik untuk dr. Andi
         DoctorSchedule::create([
-            'doctor_id' => $doctor->id,
+            'doctor_id' => $doctor->_id,
             'day_of_week' => 'Senin',
             'start_time' => '08:00',
             'end_time' => '14:00',
@@ -47,7 +56,7 @@ class DatabaseSeeder extends Seeder
             'is_active' => true
         ]);
 
-        // 4. Buat Akun Pasien & Profilnya
+        // 5. Buat Akun Pasien & Profilnya
         $patientUser = User::create([
             'name' => 'Budi Santoso',
             'email' => 'budi@simklinik.com',
@@ -56,7 +65,7 @@ class DatabaseSeeder extends Seeder
         ]);
 
         Patient::create([
-            'user_id' => $patientUser->id,
+            'user_id' => $patientUser->_id,
             'nik' => '5171234567890001',
             'date_of_birth' => '1995-08-17',
             'gender' => 'L',
@@ -64,16 +73,18 @@ class DatabaseSeeder extends Seeder
             'allergies' => ['Penisilin', 'Udang']
         ]);
 
-        // 5. Buat Data Obat (Dengan Struktur Batch FEFO)
+        // 6. Buat Data Obat (Dengan Struktur Batch FEFO)
         Medicine::create([
             'name' => 'Paracetamol 500mg',
             'category' => 'Tablet',
-            'base_price' => 5000,
+            'stock' => 150,
+            'unit_price' => 5000,
+            'expired_date' => '2026-12-01',
             'batches' => [
                 [
                     'batch_no' => 'BATCH-A01',
                     'stock' => 50,
-                    'exp_date' => '2026-12-01' // Kedaluwarsa lebih cepat (akan dipotong duluan)
+                    'exp_date' => '2026-12-01'
                 ],
                 [
                     'batch_no' => 'BATCH-A02',

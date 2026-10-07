@@ -14,6 +14,12 @@ class MedicalRecord extends Model
         'appointment_id',
         'patient_id',
         'doctor_id',
+        'subjective',
+        'objective',
+        'assessment',
+        'plan',
+        'prescriptions',
+        'examined_at',
         'soap' 
     ];
 

@@ -12,6 +12,9 @@ class Medicine extends Model
     protected $fillable = [
         'name',
         'category',    // Contoh: Sirup, Tablet, Salep
+        'stock',
+        'unit_price',
+        'expired_date',
         'base_price',  // Harga jual satuan
         'batches'      // Array berisi detail stok dan tanggal kedaluwarsa
     ];

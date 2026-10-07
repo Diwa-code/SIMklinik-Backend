@@ -12,8 +12,9 @@ class Doctor extends Model
 
     protected $fillable = [
         'user_id',
-        'sip_number',
-        'specialization',
+        'str_number',     // Nomor Surat Tanda Registrasi (Kompetensi Nasional)
+        'sip_number',     // Nomor Surat Izin Praktik di klinik ini
+        'specialization', // Spesialisasi / Poliklinik
         'is_active'
     ];
 
