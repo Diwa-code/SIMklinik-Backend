@@ -2,9 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use App\Models\User;
 use App\Models\Doctor;
+use App\Models\User;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
 class DoctorController extends Controller
@@ -19,18 +19,20 @@ class DoctorController extends Controller
         if ($secretKey !== config('app.doctor_register_secret', 'RAHASIA_KLINIK')) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Unauthorized: Anda tidak memiliki hak akses untuk mendaftarkan dokter.'
+                'message' => 'Unauthorized: Anda tidak memiliki hak akses untuk mendaftarkan dokter.',
             ], 403);
         }
 
         // 2. Validasi input data kredensial & legalitas medis
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|string|email|unique:users,email',
+            'email' => 'required|string|email|unique:mongodb.users,email',
             'password' => 'required|string|min:6',
-            'str_number' => 'required|string|unique:doctors,str_number',
-            'sip_number' => 'required|string|unique:doctors,sip_number',
+            'str_number' => 'required|string|unique:mongodb.doctors,str_number',
+            'sip_number' => 'required|string|unique:mongodb.doctors,sip_number',
             'specialization' => 'required|string',
+            'consultation_fee' => 'sometimes|numeric|min:0',
+            'gender' => 'sometimes|string|in:L,P',
         ]);
 
         try {
@@ -48,6 +50,8 @@ class DoctorController extends Controller
                 'str_number' => $request->str_number,
                 'sip_number' => $request->sip_number,
                 'specialization' => $request->specialization,
+                'consultation_fee' => $request->filled('consultation_fee') ? (float) $request->consultation_fee : 50000,
+                'gender' => $request->gender ?? null,
                 'is_active' => true,
             ]);
 
@@ -56,14 +60,14 @@ class DoctorController extends Controller
                 'message' => 'Data dokter dan legalitas praktiknya berhasil didaftarkan.',
                 'data' => [
                     'user' => $user,
-                    'doctor_profile' => $doctor
-                ]
+                    'doctor_profile' => $doctor,
+                ],
             ], 201);
 
         } catch (\Exception $e) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Gagal mendaftarkan dokter: ' . $e->getMessage()
+                'message' => 'Gagal mendaftarkan dokter: '.$e->getMessage(),
             ], 500);
         }
     }

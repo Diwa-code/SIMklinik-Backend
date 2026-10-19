@@ -2,12 +2,13 @@
 
 namespace App\Models;
 
-use MongoDB\Laravel\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use MongoDB\Laravel\Eloquent\Model;
 
 class Billing extends Model
 {
     protected $connection = 'mongodb';
+
     protected $collection = 'billings';
 
     protected $fillable = [
@@ -21,7 +22,8 @@ class Billing extends Model
         'grand_total',      // Jumlah akhir yang harus dibayar
         'guarantor',        // Penjamin: Umum, BPJS, Asuransi
         'payment_status',   // unpaid, paid, cancelled
-        'payment_method'    // cash, transfer, asuransi
+        'payment_method',   // cash, transfer, asuransi
+        'stock_deducted',    // boolean penanda apakah stok FEFO sudah dipotong
     ];
 
     public function appointment(): BelongsTo

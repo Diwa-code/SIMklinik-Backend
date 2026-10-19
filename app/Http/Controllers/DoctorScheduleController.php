@@ -2,8 +2,9 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
+use App\Models\Doctor;
 use App\Models\DoctorSchedule;
+use Illuminate\Http\Request;
 
 class DoctorScheduleController extends Controller
 {
@@ -12,13 +13,20 @@ class DoctorScheduleController extends Controller
      */
     public function show($doctorId)
     {
-        $schedules = DoctorSchedule::where('doctor_id', $doctorId)
+        $doctor = Doctor::find($doctorId)
+            ?? Doctor::where('user_id', $doctorId)->first();
+
+        $targetDoctorId = $doctor ? (string) $doctor->_id : $doctorId;
+
+        $schedules = DoctorSchedule::where('doctor_id', $targetDoctorId)
             ->where('is_active', true)
+            ->orderBy('schedule_date')
+            ->orderBy('start_time')
             ->get();
 
         return response()->json([
             'message' => 'Jadwal Praktik Dokter Dimuat',
-            'data'    => $schedules
+            'data' => $schedules,
         ]);
     }
 
@@ -28,25 +36,35 @@ class DoctorScheduleController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'doctor_id'   => 'required|string',
-            'day_of_week' => 'required|string',
-            'start_time'  => 'required|date_format:H:i',
-            'end_time'    => 'required|date_format:H:i|after:start_time',
-            'quota'       => 'required|integer|min:1'
+            'doctor_id' => 'required|string',
+            'schedule_date' => 'required|date_format:Y-m-d|after_or_equal:today',
+            'start_time' => 'required|date_format:H:i',
+            'end_time' => 'required|date_format:H:i|after:start_time',
+            'quota' => 'required|integer|min:1',
         ]);
 
+        $doctor = Doctor::find($request->doctor_id)
+            ?? Doctor::where('user_id', $request->doctor_id)->first();
+
+        if (! $doctor) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Data profil dokter tidak ditemukan. Pastikan parameter doctor_id valid.',
+            ], 404);
+        }
+
         $schedule = DoctorSchedule::create([
-            'doctor_id'   => $request->doctor_id,
-            'day_of_week' => $request->day_of_week,
-            'start_time'  => $request->start_time,
-            'end_time'    => $request->end_time,
-            'quota'       => $request->quota,
-            'is_active'   => true
+            'doctor_id' => (string) $doctor->_id,
+            'schedule_date' => $request->schedule_date,
+            'start_time' => $request->start_time,
+            'end_time' => $request->end_time,
+            'quota' => $request->quota,
+            'is_active' => true,
         ]);
 
         return response()->json([
             'message' => 'Jadwal Praktik Berhasil Ditambahkan',
-            'data'    => $schedule
+            'data' => $schedule,
         ], 201);
     }
 
@@ -57,28 +75,28 @@ class DoctorScheduleController extends Controller
     {
         $schedule = DoctorSchedule::find($id);
 
-        if (!$schedule) {
+        if (! $schedule) {
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Jadwal praktik tidak ditemukan.'
+                'status' => 'error',
+                'message' => 'Jadwal praktik tidak ditemukan.',
             ], 404);
         }
 
         $request->validate([
-            'day_of_week' => 'sometimes|string',
-            'start_time'  => 'sometimes|date_format:H:i',
-            'end_time'    => 'sometimes|date_format:H:i|after:start_time',
-            'quota'       => 'sometimes|integer|min:1',
-            'is_active'   => 'sometimes|boolean'
+            'schedule_date' => 'sometimes|date_format:Y-m-d|after_or_equal:today',
+            'start_time' => 'sometimes|date_format:H:i',
+            'end_time' => 'sometimes|date_format:H:i|after:start_time',
+            'quota' => 'sometimes|integer|min:1',
+            'is_active' => 'sometimes|boolean',
         ]);
 
         $schedule->update($request->only([
-            'day_of_week', 'start_time', 'end_time', 'quota', 'is_active'
+            'schedule_date', 'start_time', 'end_time', 'quota', 'is_active',
         ]));
 
         return response()->json([
             'message' => 'Jadwal Praktik Berhasil Diperbarui',
-            'data'    => $schedule->fresh()
+            'data' => $schedule->fresh(),
         ], 200);
     }
 
@@ -89,10 +107,10 @@ class DoctorScheduleController extends Controller
     {
         $schedule = DoctorSchedule::find($id);
 
-        if (!$schedule) {
+        if (! $schedule) {
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Jadwal praktik tidak ditemukan.'
+                'status' => 'error',
+                'message' => 'Jadwal praktik tidak ditemukan.',
             ], 404);
         }
 

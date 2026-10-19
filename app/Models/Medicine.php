@@ -7,6 +7,7 @@ use MongoDB\Laravel\Eloquent\Model;
 class Medicine extends Model
 {
     protected $connection = 'mongodb';
+
     protected $collection = 'medicines';
 
     protected $fillable = [
@@ -16,6 +17,6 @@ class Medicine extends Model
         'unit_price',
         'expired_date',
         'base_price',  // Harga jual satuan
-        'batches'      // Array berisi detail stok dan tanggal kedaluwarsa
+        'batches',      // Array berisi detail stok dan tanggal kedaluwarsa
     ];
 }

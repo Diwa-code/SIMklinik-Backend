@@ -2,11 +2,12 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Appointment;
 use App\Models\Doctor;
 use App\Models\DoctorSchedule;
-use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 
 class AppointmentController extends Controller
 {
@@ -21,22 +22,41 @@ class AppointmentController extends Controller
 
         if ($user->role === 'patient') {
             // Pasien hanya boleh melihat antrean miliknya sendiri
-            $appointments = Appointment::with(['patient', 'doctor'])
-                ->where('patient_id', $user->_id)
-                ->orderBy('created_at', 'desc')
-                ->get();
+            $query = Appointment::with(['patient', 'doctor'])
+                ->where('patient_id', (string) $user->_id)
+                ->orderBy('created_at', 'desc');
         } else {
-            // Dokter dan Admin melihat semua antrean
-            $appointments = Appointment::with(['patient', 'doctor'])
+            // Dokter dan Admin melihat antrean non-draft
+            $query = Appointment::with(['patient', 'doctor'])
+                ->where('status', '!=', 'draft')
                 ->orderBy('date', 'asc')
-                ->orderBy('queue_number', 'asc')
-                ->get();
+                ->orderBy('queue_number', 'asc');
         }
+
+        // Filter status fleksibel: misal ?status=waiting atau ?status=waiting,called
+        if ($request->filled('status')) {
+            $statuses = array_filter(array_map('trim', explode(',', $request->status)));
+            if (! empty($statuses)) {
+                $query->whereIn('status', $statuses);
+            }
+        }
+
+        // Filter tanggal jika diberikan (?date=YYYY-MM-DD)
+        if ($request->filled('date')) {
+            $query->where('date', $request->date);
+        }
+
+        // Filter dokter tertentu (?doctor_id=...)
+        if ($request->filled('doctor_id')) {
+            $query->where('doctor_id', $request->doctor_id);
+        }
+
+        $appointments = $query->get();
 
         return response()->json([
             'status' => 'success',
             'message' => 'Daftar Antrean Berhasil Dimuat',
-            'data' => $appointments
+            'data' => $appointments,
         ], 200);
     }
 
@@ -46,171 +66,345 @@ class AppointmentController extends Controller
     public function recommend(Request $request)
     {
         $request->validate([
-            'complaint' => 'required|string'
+            'appointment_id' => 'required|string',
         ]);
 
-        $complaint = strtolower($request->input('complaint'));
-
-        // Petakan keluhan secara dinamis ke spesialisasi yang ada di data dokter
-        $matchedSpecialization = 'Poliklinik Umum'; // Fallback default
-
-        if (str_contains($complaint, 'demam') || str_contains($complaint, 'batuk') || str_contains($complaint, 'sesak') || str_contains($complaint, 'lemas') || str_contains($complaint, 'mual') || str_contains($complaint, 'pusing')) {
-            $matchedSpecialization = 'Poliklinik Penyakit Dalam';
-        } elseif (str_contains($complaint, 'gigi') || str_contains($complaint, 'gusi') || str_contains($complaint, 'nyeri gigi')) {
-            $matchedSpecialization = 'Poliklinik Gigi';
-        } elseif (str_contains($complaint, 'anak') || str_contains($complaint, 'bayi') || str_contains($complaint, 'imunisasi')) {
-            $matchedSpecialization = 'Poliklinik Anak';
+        $appointment = $this->findPatientDraft($request, (string) $request->input('appointment_id'));
+        if (! $appointment instanceof Appointment) {
+            return $this->appointmentNotFoundResponse();
         }
 
-        // Cari dokter aktif yang kolom 'specialization'-nya cocok dengan hasil pemetaan
-        $recommendedDoctor = Doctor::with('user')
-            ->where('specialization', 'LIKE', '%' . $matchedSpecialization . '%')
-            ->where('is_active', true)
-            ->first();
-
-        // Jika tidak ada yang spesifik, ambil dokter aktif pertama yang tersedia di sistem
-        if (!$recommendedDoctor) {
-            $recommendedDoctor = Doctor::with('user')
-                ->where('is_active', true)
-                ->first();
-
-            if ($recommendedDoctor) {
-                $matchedSpecialization = $recommendedDoctor->specialization;
-            }
-        }
-
-        // Ambil seluruh daftar dokter aktif beserta relasi user-nya untuk opsi pilihan manual pasien
-        $allDoctors = Doctor::with('user')
-            ->where('is_active', true)
-            ->get();
+        $matchedSpecialization = $this->specializationForComplaint($appointment->complaint);
+        $availableSchedules = $this->availableSchedulesForAppointment($appointment, $matchedSpecialization);
+        $recommendedSchedule = $availableSchedules->first();
 
         return response()->json([
             'status' => 'success',
+            'appointment_id' => (string) $appointment->_id,
+            'date' => $appointment->date,
+            'complaint' => $appointment->complaint,
             'recommendation' => [
                 'specialization' => $matchedSpecialization,
-                'doctor_id' => $recommendedDoctor ? $recommendedDoctor->_id : null,
-                'doctor_name' => ($recommendedDoctor && $recommendedDoctor->user) ? $recommendedDoctor->user->name : 'Dokter Umum Tersedia'
+                'doctor_id' => $recommendedSchedule ? $recommendedSchedule->doctor_id : null,
+                'doctor_name' => ($recommendedSchedule && $recommendedSchedule->doctor && $recommendedSchedule->doctor->user)
+                    ? $recommendedSchedule->doctor->user->name
+                    : null,
+                'doctor_schedule_id' => $recommendedSchedule ? (string) $recommendedSchedule->_id : null,
+                'start_time' => $recommendedSchedule?->start_time,
+                'end_time' => $recommendedSchedule?->end_time,
             ],
-            'available_doctors' => $allDoctors
+            'available_doctors' => $availableSchedules,
         ], 200);
     }
 
     /**
      * 2. Pendaftaran Antrean Pasien
+     * Dilengkapi validasi ketersediaan jadwal dokter dan kuota pasien per hari.
      */
     public function store(Request $request)
     {
         $request->validate([
-            'doctor_id' => 'required|string', // Merujuk ke _id dari collection doctors
-            'date' => 'required|date',
+            'date' => 'required|date_format:Y-m-d|after_or_equal:today',
             'complaint' => 'required|string',
-            'guarantor' => 'required|string' // Contoh: Umum, BPJS, Asuransi
+            'guarantor' => 'required|string',
+            'require_complete_profile' => 'sometimes|boolean',
         ]);
 
-        // Cek nomor antrean terakhir berdasarkan ID dokter dan tanggal yang sama
-        $lastAppointment = Appointment::where('doctor_id', $request->doctor_id)
-            ->where('date', $request->date)
-            ->orderBy('created_at', 'desc')
-            ->first();
+        $user = $request->user();
+        $completeness = $user->getProfileCompleteness();
 
-        // Generate nomor antrean otomatis (A-001, A-002, dst)
-        $queueNumber = 'A-001';
-        if ($lastAppointment && isset($lastAppointment->queue_number)) {
-            $lastNumber = (int) substr($lastAppointment->queue_number, 2);
-            $queueNumber = 'A-' . str_pad($lastNumber + 1, 3, '0', STR_PAD_LEFT);
+        // Validasi opsional: blokir appointment jika front-end meminta strict profile readiness
+        if ($request->boolean('require_complete_profile') || $request->header('X-Require-Complete-Profile') === 'true') {
+            if (! $completeness['is_appointment_ready']) {
+                return response()->json([
+                    'status' => 'error',
+                    'code' => 'INCOMPLETE_PROFILE',
+                    'message' => 'Harap lengkapi data profil identitas pasien sebelum melakukan janji temu.',
+                    'profile_completeness' => $completeness,
+                ], 422);
+            }
         }
 
-        // Simpan pendaftaran antrean baru ke MongoDB
+        // Buat draft untuk menetapkan tanggal dan keluhan sebelum dokter dipilih.
         $appointment = Appointment::create([
-            'patient_id' => $request->user()->_id, // ID pasien dari token Sanctum
-            'doctor_id' => $request->doctor_id,
-            'queue_number' => $queueNumber,
+            'patient_id' => (string) $user->_id,
             'date' => $request->date,
             'complaint' => $request->complaint,
             'guarantor' => $request->guarantor,
-            'status' => 'waiting',        // Status awal antrean
-            'payment_status' => 'unpaid'  // Status pembayaran awal
+            'status' => 'draft',
+            'payment_status' => 'unpaid',
         ]);
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Pendaftaran antrean berhasil dibuat',
-            'data' => $appointment
+            'message' => 'Draft appointment berhasil dibuat. Gunakan appointment_id untuk mendapatkan rekomendasi dokter dan jadwal.',
+            'data' => $appointment,
+            'profile_completeness' => $completeness,
         ], 201);
     }
 
-    public function getDoctorsByDate(Request $request)
-{
-    $request->validate([
-        'date'      => 'required|date',
-        'complaint' => 'nullable|string'
-    ]);
+    public function updateDraft(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'date' => 'sometimes|required|date_format:Y-m-d|after_or_equal:today',
+            'complaint' => 'sometimes|required|string',
+            'guarantor' => 'sometimes|required|string',
+        ]);
 
-    $date = $request->input('date');
-    
-    // 1. Konversi tanggal ke nama hari Bahasa Indonesia
-    $englishDay = Carbon::parse($date)->englishDayOfWeek;
-    $daysMap = [
-        'Monday'    => 'Senin',
-        'Tuesday'   => 'Selasa',
-        'Wednesday' => 'Rabu',
-        'Thursday'  => 'Kamis',
-        'Friday'    => 'Jumat',
-        'Saturday'  => 'Sabtu',
-        'Sunday'    => 'Minggu'
-    ];
-    $dayOfWeek = $daysMap[$englishDay] ?? '';
-
-    // 2. Ambil jadwal dokter yang aktif pada hari tersebut
-    $query = DoctorSchedule::with(['doctor.user'])
-        ->where('day_of_week', $dayOfWeek)
-        ->where('is_active', true);
-
-    // Filter opsional berdasarkan keluhan (jika dikirim oleh front-end)
-    if ($request->filled('complaint')) {
-        $complaint = strtolower($request->input('complaint'));
-        $matchedSpecialization = 'Poliklinik Umum';
-
-        if (str_contains($complaint, 'demam') || str_contains($complaint, 'batuk') || str_contains($complaint, 'sesak') || str_contains($complaint, 'lemas') || str_contains($complaint, 'mual') || str_contains($complaint, 'pusing')) {
-            $matchedSpecialization = 'Poliklinik Penyakit Dalam';
-        } elseif (str_contains($complaint, 'gigi') || str_contains($complaint, 'gusi')) {
-            $matchedSpecialization = 'Poliklinik Gigi';
-        } elseif (str_contains($complaint, 'anak') || str_contains($complaint, 'bayi')) {
-            $matchedSpecialization = 'Poliklinik Anak';
+        if ($validated === []) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Kirim minimal satu field untuk mengubah draft appointment.',
+            ], 422);
         }
 
-        $query->whereHas('doctor', function ($q) use ($matchedSpecialization) {
-            $q->where('specialization', 'LIKE', '%' . $matchedSpecialization . '%');
-        });
+        $appointment = $this->findPatientDraft($request, $id);
+        if (! $appointment instanceof Appointment) {
+            return $this->appointmentNotFoundResponse();
+        }
+
+        $appointment->update($validated);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Draft appointment berhasil diperbarui.',
+            'data' => $appointment->fresh(),
+        ], 200);
     }
 
-    $schedules = $query->get();
+    public function confirm(Request $request, string $id): JsonResponse
+    {
+        $request->validate([
+            'doctor_id' => 'required|string',
+            'doctor_schedule_id' => 'required|string',
+        ]);
 
-    // 3. Mapping data untuk menghitung kuota secara real-time pada tanggal tersebut
-    $schedulesWithQuotaInfo = $schedules->map(function ($schedule) use ($date) {
-        // Hitung berapa pasien yang sudah booking ke dokter ini pada tanggal tersebut
-        $bookedCount = Appointment::where('doctor_id', $schedule->doctor_id)
-            ->where('date', $date)
-            ->where('status', '!=', 'cancelled') // Jangan hitung yang batal
+        $appointment = $this->findPatientDraft($request, $id);
+        if (! $appointment instanceof Appointment) {
+            return $this->appointmentNotFoundResponse();
+        }
+
+        $doctor = Doctor::where('_id', $request->doctor_id)
+            ->where('is_active', true)
+            ->first();
+
+        if (! $doctor) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Dokter tidak ditemukan atau sedang tidak aktif.',
+            ], 404);
+        }
+
+        $schedule = DoctorSchedule::where('_id', $request->doctor_schedule_id)
+            ->where('doctor_id', $request->doctor_id)
+            ->where('schedule_date', $appointment->date)
+            ->where('is_active', true)
+            ->first();
+
+        if (! $schedule) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Jadwal praktik yang dipilih tidak aktif atau tidak sesuai dengan dokter dan tanggal ({$appointment->date}).",
+            ], 422);
+        }
+
+        $matchedSpecialization = $this->specializationForComplaint($appointment->complaint);
+        if (! str_contains(mb_strtolower((string) $doctor->specialization), mb_strtolower($matchedSpecialization))) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Dokter yang dipilih tidak sesuai dengan keluhan. Keluhan ini diarahkan ke {$matchedSpecialization}.",
+            ], 422);
+        }
+
+        $bookedCount = Appointment::where('doctor_schedule_id', (string) $schedule->_id)
+            ->where('date', $appointment->date)
+            ->whereNotIn('status', ['draft', 'cancelled'])
             ->count();
 
-        $remainingQuota = $schedule->quota - $bookedCount;
-        $isFull = $remainingQuota <= 0;
+        if ($bookedCount >= $schedule->quota) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Kuota antrean untuk sesi {$schedule->start_time}-{$schedule->end_time} pada tanggal {$appointment->date} sudah penuh ({$schedule->quota} antrean).",
+            ], 422);
+        }
 
-        // Tambahkan informasi tambahan ke dalam JSON respons
-        $schedule->booked_count = $bookedCount;
-        $schedule->remaining_quota = max(0, $remainingQuota);
-        $schedule->is_full = $isFull;
+        $existingAppointment = Appointment::where('patient_id', (string) $request->user()->_id)
+            ->where('doctor_id', $request->doctor_id)
+            ->where('date', $appointment->date)
+            ->where('_id', '!=', $appointment->_id)
+            ->whereNotIn('status', ['draft', 'cancelled'])
+            ->first();
 
-        return $schedule;
-    });
+        if ($existingAppointment) {
+            return response()->json([
+                'status' => 'error',
+                'message' => "Anda sudah memiliki antrean aktif untuk dokter ini pada tanggal {$appointment->date} (Nomor: {$existingAppointment->queue_number}).",
+            ], 422);
+        }
 
-    return response()->json([
-        'status' => 'success',
-        'date' => $date,
-        'day_name' => $dayOfWeek,
-        'data' => $schedulesWithQuotaInfo
-    ], 200);
-}
+        $lastAppointment = Appointment::where('doctor_id', $request->doctor_id)
+            ->where('date', $appointment->date)
+            ->whereNotIn('status', ['draft', 'cancelled'])
+            ->orderBy('created_at', 'desc')
+            ->first();
 
+        $queueNumber = 'A-001';
+        if ($lastAppointment && isset($lastAppointment->queue_number)) {
+            $lastNumber = (int) substr($lastAppointment->queue_number, 2);
+            $queueNumber = 'A-'.str_pad($lastNumber + 1, 3, '0', STR_PAD_LEFT);
+        }
+
+        $appointment->update([
+            'doctor_id' => (string) $doctor->_id,
+            'doctor_schedule_id' => (string) $schedule->_id,
+            'practice_start_time' => $schedule->start_time,
+            'practice_end_time' => $schedule->end_time,
+            'queue_number' => $queueNumber,
+            'status' => 'waiting',
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Pilihan dokter dan jadwal berhasil dikonfirmasi. Appointment masuk antrean.',
+            'data' => $appointment->fresh(),
+        ], 200);
+    }
+
+    /**
+     * Memperbarui status alur klinis antrean (waiting -> called -> in_consultation -> completed / cancelled).
+     * Khusus Dokter dan Admin untuk pemanggilan pasien di poli.
+     */
+    public function updateStatus(Request $request, $id)
+    {
+        $appointment = Appointment::find($id);
+        if (! $appointment) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Data antrean tidak ditemukan.',
+            ], 404);
+        }
+
+        if ($appointment->status === 'draft') {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Draft appointment harus dikonfirmasi dengan dokter dan jadwal sebelum status antrean diubah.',
+            ], 422);
+        }
+
+        $request->validate([
+            'status' => 'required|string|in:waiting,called,in_consultation,skipped,completed,cancelled',
+        ]);
+
+        $updateData = [
+            'status' => $request->status,
+        ];
+
+        // Jika dipanggil ('called'), catat waktu dan tambah counter panggilan
+        if ($request->status === 'called') {
+            $updateData['call_count'] = ((int) ($appointment->call_count ?? 0)) + 1;
+            $updateData['last_called_at'] = now();
+        }
+
+        // Jika dikembalikan ke 'waiting' (misal pasien sempat tidak di tempat saat dipanggil)
+        if ($request->status === 'waiting' && in_array($appointment->status, ['called', 'skipped'])) {
+            $updateData['returned_to_waiting_at'] = now();
+            $updateData['is_recalled'] = true;
+        }
+
+        $appointment->update($updateData);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Status antrean berhasil diperbarui menjadi '{$request->status}'",
+            'data' => $appointment->fresh(),
+        ], 200);
+    }
+
+    public function getDoctorsByDate(Request $request)
+    {
+        $request->validate([
+            'appointment_id' => 'required|string',
+        ]);
+
+        $appointment = $this->findPatientDraft($request, (string) $request->input('appointment_id'));
+        if (! $appointment instanceof Appointment) {
+            return $this->appointmentNotFoundResponse();
+        }
+
+        $matchedSpecialization = $this->specializationForComplaint($appointment->complaint);
+        $schedulesWithQuotaInfo = $this->availableSchedulesForAppointment($appointment, $matchedSpecialization);
+
+        return response()->json([
+            'status' => 'success',
+            'appointment_id' => (string) $appointment->_id,
+            'date' => $appointment->date,
+            'complaint' => $appointment->complaint,
+            'specialization' => $matchedSpecialization,
+            'data' => $schedulesWithQuotaInfo,
+        ], 200);
+    }
+
+    private function findPatientDraft(Request $request, string $appointmentId): ?Appointment
+    {
+        return Appointment::where('_id', $appointmentId)
+            ->where('patient_id', (string) $request->user()->_id)
+            ->where('status', 'draft')
+            ->first();
+    }
+
+    private function appointmentNotFoundResponse(): JsonResponse
+    {
+        return response()->json([
+            'status' => 'error',
+            'message' => 'Draft appointment tidak ditemukan atau bukan milik Anda.',
+        ], 404);
+    }
+
+    private function availableSchedulesForAppointment(Appointment $appointment, string $matchedSpecialization): Collection
+    {
+        return DoctorSchedule::with(['doctor.user'])
+            ->where('schedule_date', $appointment->date)
+            ->where('is_active', true)
+            ->orderBy('start_time')
+            ->orderBy('end_time')
+            ->get()
+            ->filter(function (DoctorSchedule $schedule) use ($matchedSpecialization): bool {
+                $doctor = $schedule->doctor;
+
+                return $doctor !== null
+                    && $doctor->is_active
+                    && str_contains(mb_strtolower((string) $doctor->specialization), mb_strtolower($matchedSpecialization));
+            })
+            ->map(function (DoctorSchedule $schedule) use ($appointment): DoctorSchedule {
+                $bookedCount = Appointment::where('doctor_schedule_id', (string) $schedule->_id)
+                    ->where('date', $appointment->date)
+                    ->whereNotIn('status', ['draft', 'cancelled'])
+                    ->count();
+
+                $remainingQuota = max(0, $schedule->quota - $bookedCount);
+                $schedule->booked_count = $bookedCount;
+                $schedule->remaining_quota = $remainingQuota;
+                $schedule->is_full = $remainingQuota === 0;
+                $schedule->appointment_date = $appointment->date;
+
+                return $schedule;
+            })
+            ->where('is_full', false)
+            ->values();
+    }
+
+    private function specializationForComplaint(string $complaint): string
+    {
+        $complaint = mb_strtolower($complaint);
+
+        if (str_contains($complaint, 'gigi') || str_contains($complaint, 'gusi')) {
+            return 'Poliklinik Gigi';
+        }
+
+        if (str_contains($complaint, 'anak') || str_contains($complaint, 'bayi') || str_contains($complaint, 'imunisasi')) {
+            return 'Poliklinik Anak';
+        }
+
+        return 'Poliklinik Umum';
+    }
 }

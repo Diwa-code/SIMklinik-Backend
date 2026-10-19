@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\Medicine;
+use Illuminate\Http\Request;
 
 class MedicineController extends Controller
 {
@@ -15,9 +15,9 @@ class MedicineController extends Controller
         $medicines = Medicine::orderBy('name')->get();
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Daftar inventaris obat berhasil dimuat',
-            'data'    => $medicines
+            'data' => $medicines,
         ], 200);
     }
 
@@ -28,17 +28,17 @@ class MedicineController extends Controller
     {
         $medicine = Medicine::find($id);
 
-        if (!$medicine) {
+        if (! $medicine) {
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Data obat tidak ditemukan.'
+                'status' => 'error',
+                'message' => 'Data obat tidak ditemukan.',
             ], 404);
         }
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Detail obat berhasil dimuat',
-            'data'    => $medicine
+            'data' => $medicine,
         ], 200);
     }
 
@@ -48,26 +48,26 @@ class MedicineController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'name'                 => 'required|string',
-            'category'             => 'required|string',
-            'base_price'           => 'required|numeric|min:0',
-            'batches'              => 'required|array|min:1',
-            'batches.*.batch_no'   => 'required|string',
-            'batches.*.stock'      => 'required|integer|min:0',
-            'batches.*.exp_date'   => 'required|date'
+            'name' => 'required|string',
+            'category' => 'required|string',
+            'base_price' => 'required|numeric|min:0',
+            'batches' => 'required|array|min:1',
+            'batches.*.batch_no' => 'required|string',
+            'batches.*.stock' => 'required|integer|min:0',
+            'batches.*.exp_date' => 'required|date',
         ]);
 
         $medicine = Medicine::create([
-            'name'       => $request->name,
-            'category'   => $request->category,
+            'name' => $request->name,
+            'category' => $request->category,
             'base_price' => $request->base_price,
-            'batches'    => $request->batches
+            'batches' => $request->batches,
         ]);
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Obat baru dengan manajemen batch FEFO berhasil ditambahkan',
-            'data'    => $medicine
+            'data' => $medicine,
         ], 201);
     }
 
@@ -78,32 +78,32 @@ class MedicineController extends Controller
     {
         $medicine = Medicine::find($id);
 
-        if (!$medicine) {
+        if (! $medicine) {
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Data obat tidak ditemukan.'
+                'status' => 'error',
+                'message' => 'Data obat tidak ditemukan.',
             ], 404);
         }
 
         $request->validate([
-            'name'                 => 'sometimes|string',
-            'category'             => 'sometimes|string',
-            'base_price'           => 'sometimes|numeric|min:0',
-            'batches'              => 'sometimes|array|min:1',
-            'batches.*.batch_no'   => 'required_with:batches|string',
-            'batches.*.stock'      => 'required_with:batches|integer|min:0',
-            'batches.*.exp_date'   => 'required_with:batches|date'
+            'name' => 'sometimes|string',
+            'category' => 'sometimes|string',
+            'base_price' => 'sometimes|numeric|min:0',
+            'batches' => 'sometimes|array|min:1',
+            'batches.*.batch_no' => 'required_with:batches|string',
+            'batches.*.stock' => 'required_with:batches|integer|min:0',
+            'batches.*.exp_date' => 'required_with:batches|date',
         ]);
 
         // Update field yang dikirimkan
         $medicine->update($request->only([
-            'name', 'category', 'base_price', 'batches'
+            'name', 'category', 'base_price', 'batches',
         ]));
 
         return response()->json([
-            'status'  => 'success',
+            'status' => 'success',
             'message' => 'Data obat dan manajemen batch berhasil diperbarui',
-            'data'    => $medicine->fresh()
+            'data' => $medicine->fresh(),
         ], 200);
     }
 
@@ -114,18 +114,18 @@ class MedicineController extends Controller
     {
         $medicine = Medicine::find($id);
 
-        if (!$medicine) {
+        if (! $medicine) {
             return response()->json([
-                'status'  => 'error',
-                'message' => 'Data obat tidak ditemukan.'
+                'status' => 'error',
+                'message' => 'Data obat tidak ditemukan.',
             ], 404);
         }
 
         $medicine->delete();
 
         return response()->json([
-            'status'  => 'success',
-            'message' => 'Data obat berhasil dihapus dari inventaris'
+            'status' => 'success',
+            'message' => 'Data obat berhasil dihapus dari inventaris',
         ], 200);
     }
 }
