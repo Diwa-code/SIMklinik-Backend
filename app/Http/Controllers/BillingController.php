@@ -124,8 +124,15 @@ class BillingController extends Controller
 
         // Jika BPJS, status otomatis dicover dan stok obat langsung dipotong via FEFO
         if ($isBpjs) {
-            $this->deductFefoStock($medicalRecord);
-            $stockDeducted = true;
+            try {
+                $this->deductFefoStock($medicalRecord);
+                $stockDeducted = true;
+            } catch (\RuntimeException $e) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Gagal memproses klaim BPJS: '.$e->getMessage(),
+                ], 422);
+            }
         }
 
         // 5. Simpan data tagihan ke database
@@ -182,8 +189,15 @@ class BillingController extends Controller
 
         // 1. Jika status diubah menjadi PAID dan stok belum pernah dipotong:
         if ($newPaymentStatus === 'paid' && ! $billing->stock_deducted) {
-            $this->deductFefoStock($medicalRecord);
-            $billing->stock_deducted = true;
+            try {
+                $this->deductFefoStock($medicalRecord);
+                $billing->stock_deducted = true;
+            } catch (\RuntimeException $e) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Pembayaran tidak dapat diselesaikan: '.$e->getMessage(),
+                ], 422);
+            }
         }
 
         // 2. Jika status diubah menjadi CANCELLED dan stok sudah terlanjur dipotong:
@@ -211,7 +225,13 @@ class BillingController extends Controller
     }
 
     /**
-     * Helper: Memotong stok obat dari batch terdekat kedaluwarsa (FEFO)
+     * Helper: Memotong stok obat dari batch terdekat kedaluwarsa (FEFO).
+     *
+     * Sebelum memotong, validasi bahwa total stok tersedia di semua batch
+     * mencukupi kebutuhan resep. Jika tidak cukup, lempar RuntimeException
+     * sehingga pemanggil dapat mengembalikan respons 422 ke client.
+     *
+     * @throws \RuntimeException jika stok tidak mencukupi untuk salah satu obat
      */
     protected function deductFefoStock(?MedicalRecord $medicalRecord): void
     {
@@ -228,12 +248,32 @@ class BillingController extends Controller
             }
 
             $medicine = Medicine::find($medicineId);
-            if (! $medicine || empty($medicine->batches)) {
-                continue;
+
+            if (! $medicine) {
+                throw new \RuntimeException(
+                    "Obat dengan ID {$medicineId} tidak ditemukan di inventaris."
+                );
+            }
+
+            if (empty($medicine->batches)) {
+                throw new \RuntimeException(
+                    "Obat '{$medicine->name}' tidak memiliki batch stok yang terdaftar."
+                );
             }
 
             // Urutkan batch berdasarkan exp_date terdekat (FEFO)
             $batches = collect($medicine->batches)->sortBy('exp_date')->values()->toArray();
+
+            // Validasi: total stok seluruh batch harus mencukupi kebutuhan
+            $totalAvailableStock = collect($batches)->sum('stock');
+            if ($totalAvailableStock < $qtyNeeded) {
+                throw new \RuntimeException(
+                    "Stok obat '{$medicine->name}' tidak mencukupi. "
+                    ."Tersedia: {$totalAvailableStock}, Dibutuhkan: {$qtyNeeded}."
+                );
+            }
+
+            // Lakukan pemotongan stok FEFO
             $remainingQty = $qtyNeeded;
 
             foreach ($batches as &$batch) {
@@ -242,15 +282,12 @@ class BillingController extends Controller
                 }
 
                 if ($batch['stock'] > 0) {
-                    if ($batch['stock'] >= $remainingQty) {
-                        $batch['stock'] -= $remainingQty;
-                        $remainingQty = 0;
-                    } else {
-                        $remainingQty -= $batch['stock'];
-                        $batch['stock'] = 0;
-                    }
+                    $deduct = min($batch['stock'], $remainingQty);
+                    $batch['stock'] -= $deduct;
+                    $remainingQty -= $deduct;
                 }
             }
+            unset($batch);
 
             $medicine->update(['batches' => $batches]);
         }
